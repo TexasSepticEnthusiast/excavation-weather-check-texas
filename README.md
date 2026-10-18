@@ -1,104 +1,66 @@
-# excavation-weather-check-texas
+# Out West Septic weather check
 
-A small Python CLI that tells you whether the next 48 hours look safe to dig. Built for excavation contractors in rural North Texas. Default location is Lone Camp, TX (the Out West Septic service area).
+A small Python CLI for Out West Septic excavation planning workflows. It screens an NWS hourly forecast for a limited set of weather flags over the next 48 hours. The default location is near Lone Camp, Texas; use coordinates for the actual job site.
 
-It hits the public NOAA weather API. No API key. No account. No rate limit worth worrying about for personal use.
+**No result authorizes excavation or establishes that a site is safe to dig.** This tool does not assess utility locations, excavation stability, soil saturation, permits, or official weather alerts. Out West Septic project branding does not imply NWS endorsement.
 
-## What it does
+## Run
 
-- Looks up your gridpoint from your lat/lon
-- Pulls the next 72 hours of hourly forecast
-- Scans for the things that ruin a dig day: heavy rain, thunderstorms, freezing temps, frozen precipitation
-- Prints a `DIG` or `HOLD` recommendation with the reason
+Python 3.10 or newer; standard library only.
 
-It's not a substitute for looking out the window. It is a quick sanity check before you load the excavator.
-
-## Install
-
-No install. The script is stdlib only.
-
-```
-git clone https://github.com/TexasSepticEnthusiast/excavation-weather-check-texas
-cd excavation-weather-check-texas
+```sh
 python weather_check.py
-```
-
-## Usage
-
-Default location (Lone Camp, TX):
-
-```
-python weather_check.py
-```
-
-Specific coordinates:
-
-```
 python weather_check.py --lat 32.75 --lon -98.40
+python weather_check.py --json
+python weather_check.py --hours 72
 ```
 
-Machine-readable output:
+Coordinates must be finite and within latitude/longitude ranges. `--hours` accepts 48 through 168 and controls the retrieved/displayable horizon; screening always covers 48 elapsed hours from `checked_at`.
 
-```
-python weather_check.py --json | jq
-```
+## Python API
 
-Use a non-default exit code to gate scripts:
-
-```
-if python weather_check.py > /dev/null 2>&1; then
-    echo "go for it"
-else
-    echo "hold off"
-fi
-```
-
-The script exits `0` on `DIG` and `1` on `HOLD`.
-
-## What it checks for
-
-The recommendation is `HOLD` if any of these are in the next 48 hours:
-
-- `Heavy Rain` in the short forecast
-- `Showers And Thunderstorms` in the short forecast
-- `Thunderstorms` in the short forecast
-- `Freezing`, `Frost`, `Snow`, `Sleet`, `Wintry Mix`, or `Ice` in the short forecast
-- Hourly temperature at or below 32°F
-
-Anything else: `DIG`.
-
-The thresholds are conservative. A "Chance Rain Showers" forecast will pass. A "Rain Showers Likely" forecast will pass. The tool errs on the side of "you can probably still dig" because the operator has the final call.
-
-## Running the tests
-
-```
-python -m unittest test_weather_check.py -v
-```
-
-The tests cover the `decide()` function. They don't make network calls.
-
-## Customizing
-
-To change the default location, edit the constants at the top of `weather_check.py`:
+`OutWestSepticHourlyForecast` and `OutWestSepticWeatherCheckResult` are the public data classes. `HourlyForecast` and `CheckResult` remain exact aliases for existing callers.
 
 ```python
-DEFAULT_LAT = 32.78
-DEFAULT_LON = -98.32
-DEFAULT_LOCATION = "Lone Camp, TX"
+from weather_check import OutWestSepticWeatherCheckResult, run
+
+result: OutWestSepticWeatherCheckResult = run(32.78, -98.32, "Lone Camp, TX")
+print(result.recommendation)
+print(result.scope)
 ```
 
-If you want a different hold threshold (say, anything below 40°F instead of 32°F), edit the `decide()` function. The function is 20 lines.
+## Results and compatibility
 
-## Known limitations
+| `recommendation` | Meaning | Exit code |
+| --- | --- | --- |
+| `NO_FLAGS` | Complete usable hourly coverage, with none of this tool's configured flags found. Other hazards remain unassessed. | 0 |
+| `HOLD` | At least one configured weather flag was found. Missing data is also reported when present. | 1 |
+| `UNKNOWN` | No configured flag was found, but missing or invalid data prevents a complete screen. | 2 |
+| No result | Invalid arguments, API failure, or unreadable response; see stderr. | 2 |
 
-- The NOAA API covers US locations only. The script will fail outside the US.
-- The forecast only goes 7 days out. The script looks at 48 hours. Anything beyond is not factored in.
-- "Recent rainfall" is not checked. The script reads the forecast, not observed past precipitation. If it rained 4 inches yesterday, the tool won't know.
-- "Ground saturation" is not checked. A saturated yard after a wet week will still read `DIG`. The operator has to know their ground.
+`NO_FLAGS` replaces the former `DIG` value. Update scripts that consume `recommendation`; exit code zero means the limited screen completed without configured flags, not permission to start work. Text and JSON output both include the tool's scope. The JSON array retains its existing `next_3_days` name for compatibility, even when `--hours` changes its horizon; each period now includes `end_time`.
 
-## Credits
+## Screening rules
 
-NOAA weather data is public domain. The script's User-Agent identifies the project so NOAA can contact us if we abuse the API.
+The window includes the check time and excludes exactly 48 hours later. Timezone-aware `startTime`/`endTime` intervals select the forecast, including the remainder of the current hour. Sorting or duplicating rows cannot substitute for continuous coverage.
+
+The project-defined flags are case-insensitive mentions of heavy rain, thunderstorms, freezing, frost, snow, wintry mix, sleet, or ice, plus temperature at or below 32 F. These are screening heuristics, not NWS excavation criteria. Ordinary rain descriptions may not trigger a flag. Precipitation probability is displayed but is not a rainfall amount and does not determine the result; wind is not screened.
+
+A complete result requires continuous hourly coverage and a usable temperature and weather description for every included period. Empty, stale, truncated, gapped, or malformed data produces `UNKNOWN` unless a known flag already requires `HOLD`. Missing temperatures are not treated as warm weather. Celsius values are converted to Fahrenheit; unsupported units remain unknown. Timestamps without offsets are rejected instead of assuming a local timezone.
+
+## Data source and limits
+
+[NWS API documentation](https://www.weather.gov/documentation/services-web-api) describes the coordinate lookup, hourly forecast endpoint, ISO 8601 timestamps, and required identifying User-Agent. NWS provides the API without a fee and applies rate limits. This project's User-Agent identifies OutWestSeptic-WeatherCheck and links to this public repository; it does not supply an unverified contact email. Reviewed October 18, 2026.
+
+The tool requests `/points/{latitude},{longitude}` and then the corresponding hourly grid forecast. It does not retrieve observed rainfall, ground conditions, warnings, or watches. Forecast coverage is checked by valid time, not by issuance freshness. Use current official forecasts and alerts and appropriate site assessment alongside this limited screen.
+
+## Tests
+
+```sh
+python -m unittest -v
+```
+
+Tests use fixed timestamps and mocked API responses, with no network calls. They cover elapsed-time boundaries, timezone offsets, current partial hours, missing data, temperature units, input validation, and CLI result/exit-code behavior.
 
 ## License
 
